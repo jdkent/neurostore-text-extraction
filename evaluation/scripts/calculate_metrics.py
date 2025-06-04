@@ -220,7 +220,7 @@ def format_results(results: Dict[str, Dict]) -> str:
         if field == "aggregate":
             continue
         line = (
-            f"{field:<20} {metrics['precision']:>10.2%}",
+            f"{field:<20} {metrics['precision']:>10.2%}"
             f"{metrics['precision']:>10.2%} {metrics['f1']:>10.2%}"
         )
 
