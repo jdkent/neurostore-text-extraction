@@ -2,56 +2,60 @@ base_message = """
 You will be provided with a text sample from a scientific journal.
 The sample is delimited with triple backticks.
 
-TASK OBJECTIVE:
-Extract detailed participant demographic information with particular attention to
-groups that underwent MRI procedures.
-If there is no mention of any participant groups, return a null array.
+OBJECTIVE:
+Extract participant demographic data from neuroimaging research with:
+- Maximum accuracy and completeness
+- Clear distinction between medical and non-medical groups
+- Return null array if no groups mentioned
 
-EXTRACTION GUIDELINES:
+EXTRACTION RULES:
 
-1. GROUP IDENTIFICATION:
-   - Identify ALL distinct participant groups (both patient and control groups)
-   - Record group names/labels EXACTLY as used in the article
-   - Note which groups underwent MRI/fMRI/neuroimaging procedures
-   - Consider all subgroups (e.g., age-based, condition-based divisions)
+1. GROUP CATEGORIZATION:
+   Primary Classification (group_name):
+   - patients: ONLY for groups with documented medical/clinical conditions
+   - healthy: ALL other groups including healthy comparisons, non-clinical participants,
+     or study arms without medical conditions
 
-2. DEMOGRAPHIC DETAILS (for each group):
-   Count:
-   - Report exact participant numbers as stated
-   - Account for any excluded participants
-   - Note if numbers are approximated/ranges
+   Medical Status (diagnosis):
+   - INCLUDE: Clinical diagnoses, disorder subtypes, documented comorbidities
+     - Example: "Major Depressive Disorder with Psychotic Features" ✓
+   - EXCLUDE: Non-medical characteristics, study conditions, demographic categories
+     - Example: "Video Game Players" ✗
 
-   Clinical Status:
-   - Use EXACT diagnostic terms from the text
-   - Include any disorder subtypes mentioned
-   - Note any comorbid conditions
-   - For control groups, note any specific health criteria
+   Descriptive Subgroup Names (subgroup_name):
+   - Study Arms: "Placebo Group", "High-dose Cohort"
+   - Participant Types: "Elite Athletes", "First-time Offenders"
+   - Demographics: "Young Adult Females", "Rural Population"
+   - Relationships: "Unaffected Siblings", "First-degree Relatives"
+   - Life Circumstances: "Postpartum Mothers", "Pre-surgical Cases"
+
+2. QUANTITATIVE DATA:
+   Participant Counts:
+   - Record final included numbers only
+   - Exclude withdrawn/dropped participants
 
    Gender Distribution:
-   - Record male/female counts as explicitly stated
-   - Do not calculate/infer counts if not directly reported
-   - Note if only percentages or ratios are given
+   - Extract explicit counts by gender
+   - Do not calculate from percentages
+   - Record as null if not directly stated
 
    Age Information:
-   - Record ALL age metrics provided (mean, median, range)
-   - Preserve exact decimal places for reported values
-   - Include age units if specified (years, months)
-   - Note any age-specific subgroups
+   - Capture all reported metrics (min, max, mean, median, range)
+   - Maintain original precision
+   - Include units when specified
+   - Do not compute missing values
 
-3. DATA QUALITY:
-   - Return `null` for ANY unclear or missing information
-   - Do not make assumptions about unreported demographics
-   - Flag any inconsistent participant counts
-   - Preserve original terminology and specificity
-
-IMPORTANT REMINDERS:
-- Extract information EXACTLY as stated in the text
-- Use technical/medical terms verbatim from the source
-- Do not infer or calculate missing values
-- Return `null` for any information not explicitly provided
+3. QUALITY CONTROLS:
+   Field Requirements:
+   ✓ Use exact text for diagnoses and subgroup names
+   ✓ Include only explicitly stated numbers
+   ✓ Mark unclear/missing data as null
+   ✗ No inferred or calculated values
+   ✗ No assumptions about group characteristics
 
 Text sample: ${text}
 
-Return the extracted information in a structured format matching the specified schema,
-ensuring each field contains only explicitly stated information from the text.
+REQUIRED OUTPUT:
+Return structured data matching schema format. Each field must contain only explicitly
+stated information from text. Mark any ambiguous or missing data as null.
 """

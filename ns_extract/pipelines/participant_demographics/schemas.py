@@ -10,21 +10,26 @@ class GroupBase(BaseModel):
         "Must be explicitly stated in the text. Do not include excluded participants."
     )
     diagnosis: Optional[str] = Field(
-        description="Clinical/Medical diagnosis using EXACT terminology from the text. "
-        "Include subtypes and comorbidities if mentioned. Preserve technical terms precisely.",
+        description="ONLY clinical/medical diagnoses using EXACT terminology from the text. "
+        "Include subtypes and comorbidities if mentioned. Leave empty for non-medical groupings "
+        "like demographic categories, participant types, or study conditions.",
         json_schema_extra={NORMALIZE_TEXT: True, EXPAND_ABBREVIATIONS: True},
     )
     group_name: str = Field(
         description="Primary group classification: 'healthy' for control/comparison groups, "
-        "'patients' for those with clinical conditions",
+        "'patients' for those with clinical conditions. For non-clinical groups "
+        "(e.g. athletes, students), use 'healthy' unless they have a diagnosis.",
         enum=["healthy", "patients"],
     )
     subgroup_name: Optional[str] = Field(
-        description="The verbatim name of the group, if available",
+        description="Additional descriptive characteristics (e.g. age groups, treatment "
+        "conditions, demographics). For study drug/intervention groups, include here "
+        "rather than as diagnosis.",
         examples=[
             "Professional Collision Sport Athletes",
             "Young Hispanic Females",
-            "Depressed Patients Without Psychotic Symptoms",
+            "First-degree Relatives",
+            "Postpartum Women"
         ],
         json_schema_extra={NORMALIZE_TEXT: True, EXPAND_ABBREVIATIONS: True},
     )
