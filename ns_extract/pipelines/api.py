@@ -1,10 +1,19 @@
-from typing import Optional, Type
+"""Pipeline for extracting information using LLM APIs."""
+
+from typing import Optional, Type, Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor
+import json
 import logging
 import os
+from pathlib import Path
 from pydantic import BaseModel
 from openai import OpenAI
 from .base import IndependentPipeline, Extractor
+from .batch_handler import BatchHandler
 from publang.extract import extract_from_text
+
+
+logger = logging.getLogger(__name__)
 
 
 class APIPromptExtractor(Extractor, IndependentPipeline):
@@ -18,6 +27,10 @@ class APIPromptExtractor(Extractor, IndependentPipeline):
     def __init__(
         self,
         extraction_model: str,
+        batch: bool = False,
+        batch_size: int = 20,
+        completion_window: str = "24h",
+        temp_dir: Optional[Path] = None,
         env_variable: Optional[str] = None,
         env_file: Optional[str] = None,
         client_url: Optional[str] = None,
@@ -27,6 +40,10 @@ class APIPromptExtractor(Extractor, IndependentPipeline):
 
         Args:
             extraction_model: Model to use for extraction (e.g., 'gpt-4')
+            batch: Whether to use batch processing (default: False)
+            batch_size: Maximum requests per batch (default: 20)
+            completion_window: Time window for batch completion (default: '24h')
+            temp_dir: Directory for temporary batch files
             env_variable: Environment variable containing API key
             env_file: Path to file containing API key
             client_url: Optional URL for OpenAI client
@@ -38,6 +55,10 @@ class APIPromptExtractor(Extractor, IndependentPipeline):
             self._extraction_schema = self._output_schema
 
         self.extraction_model = extraction_model
+        self.batch = batch
+        self.batch_size = batch_size
+        self.completion_window = completion_window
+        self.temp_dir = temp_dir
         self.env_variable = env_variable
         self.env_file = env_file
         self.client_url = client_url
@@ -55,20 +76,15 @@ class APIPromptExtractor(Extractor, IndependentPipeline):
             OpenAI client instance
 
         Raises:
-            ValueError: If no API key provided or unsupported model
+            ValueError: If no API key provided
         """
         api_key = self._get_api_key()
         if not api_key:
             raise ValueError("No API key provided")
-
         return OpenAI(api_key=api_key, base_url=self.client_url)
 
     def _get_api_key(self) -> Optional[str]:
-        """Read the API key from environment variable or file.
-
-        Returns:
-            API key if found, None otherwise
-        """
+        """Read the API key from environment variable or file."""
         if self.env_variable:
             api_key = os.getenv(self.env_variable)
             if api_key:
@@ -80,59 +96,92 @@ class APIPromptExtractor(Extractor, IndependentPipeline):
                     key_parts = f.read().strip().split("=")
                     if len(key_parts) == 2:
                         return key_parts[1]
-                    logging.warning("Invalid format in API key file")
+                    logger.warning("Invalid format in API key file")
             except FileNotFoundError:
-                logging.error(f"API key file not found: {self.env_file}")
+                logger.error(f"API key file not found: {self.env_file}")
 
         return None
 
-    def _transform(self, inputs: dict, **kwargs) -> dict:
-        """Execute LLM-based extraction using processed inputs.
+    def _prepare_messages(self, text: str) -> List[Dict[str, str]]:
+        """Prepare message list for chat completion.
 
         Args:
-            processed_inputs: Dictionary containing:
-                   - text: Full text content (already loaded)
-            **kwargs: Additional arguments (like study_id)
+            text: Input text content
 
         Returns:
-            Raw predictions from LLM
+            List of message objects for chat completion
         """
-        results = {}
-        for study_id, study_inputs in inputs.items():
-            # Get text content - already loaded by InputManager
-            text = study_inputs["text"]
+        # Replace $ with $$ to escape $ signs in the prompt
+        text = text.replace("$", "$$")
 
-            # Create chat completion configuration
-            completion_config = {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": self._prompt
-                        + "\n Call the extractData function to save the output.",
-                    }
-                ],
-                "output_schema": self._extraction_schema.model_json_schema(),
+        return [
+            {
+                "role": "user",
+                "content": self._prompt + "\n Call the extractData function to save the output.",
             }
-            if self.kwargs:
-                completion_config.update(self.kwargs)
+        ]
 
-            # Replace $ with $$ to escape $ signs in the prompt
-            # (otherwise interpreted as a special character by Template())
-            text = text.replace("$", "$$")
+    def _process_single_request(self, study_id: str, study_inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a single request, either in batch or sync mode."""
+        text = study_inputs["text"]
+        completion_config = {
+            **self.kwargs,
+            "messages": self._prepare_messages(text),
+            "output_schema": self._extraction_schema.model_json_schema(),
+            "model": self.extraction_model,
+            "client": self.client,
+        }
 
-            # Extract predictions
-            study_results = extract_from_text(
-                text,
-                model=self.extraction_model,
-                client=self.client,
-                **completion_config,
-            )
+        try:
+            result = extract_from_text(text, **completion_config)
+            if result:
+                return {study_id: result}
+            logger.warning(f"No results for study {study_id}")
+        except Exception as e:
+            logger.error(f"Error processing study {study_id}: {str(e)}")
+        
+        return {}
 
-            if not study_results:
-                logging.warning(
-                    f"No results found for study {study_id} with model {self.extraction_model}"
-                )
+    def _transform(self, inputs: Dict[str, Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """Execute LLM-based extraction using processed inputs."""
+        if not self.batch:
+            results = {}
+            for study_id, study_inputs in inputs.items():
+                result = self._process_single_request(study_id, study_inputs)
+                results.update(result)
+            return results
 
-            results[study_id] = study_results
+        # Process in batches using threads
+        results = {}
+        batch_chunks = []
+        current_chunk = {}
+
+        # Split inputs into batch-sized chunks
+        for study_id, study_inputs in inputs.items():
+            current_chunk[study_id] = study_inputs
+            if len(current_chunk) >= self.batch_size:
+                batch_chunks.append(current_chunk)
+                current_chunk = {}
+        if current_chunk:
+            batch_chunks.append(current_chunk)
+
+        # Process chunks in parallel
+        with ThreadPoolExecutor(max_workers=min(len(batch_chunks), 5)) as executor:
+            futures = []
+            for chunk in batch_chunks:
+                future = executor.submit(lambda x: {
+                    sid: self._process_single_request(sid, sinputs)[sid]
+                    for sid, sinputs in x.items()
+                    if self._process_single_request(sid, sinputs)
+                }, chunk)
+                futures.append(future)
+
+            # Collect results
+            for future in futures:
+                try:
+                    chunk_results = future.result()
+                    results.update(chunk_results)
+                except Exception as e:
+                    logger.error(f"Error processing batch: {str(e)}")
 
         return results
